@@ -2,65 +2,98 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use hidapi::{BusType, DeviceInfo, HidApi};
-use std::thread;
+use std::{thread, time::Duration};
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
-    tray::TrayIconBuilder,
+    menu::{MenuBuilder, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager,
 };
 
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let quit_i = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).quit().items(&[&quit_i]).build()?;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+                #[cfg(target_os = "macos")]
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+
+            let show_i = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
+            let menu = MenuBuilder::new(app).quit().items(&[&show_i]).build()?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Dualsense battery checker")
                 .menu(&menu)
-                .build(app)?;
-
-            thread::spawn(|| loop {
-                let api = HidApi::new().expect("Failed to initialize HID API");
-                // println!("Scanning for DualSense controllers...");
-                let devices = api.device_list();
-                for device in devices {
-                    if device.vendor_id() == 0x054C
-                        && (device.product_id() == 0x0CE6 || device.product_id() == 0x0DF2)
-                    {
-                        // println!(
-                        //     "DualSense Found: {:?} via {:?}",
-                        //     device.product_string().clone().unwrap_or_default(),
-                        //     device.bus_type()
-                        // );
-
-                        if let Ok(controller) = api.open(device.vendor_id(), device.product_id()) {
-                            let mut buf = [0u8; 64];
-
-                            if let Ok(len) = controller.read_timeout(&mut buf, 500) {
-                                if len > 30 {
-                                    // println!("{:?}", &buf);
-                                    let battery_report = parse_battery(&buf, &device);
-                                    println!(
-                                        "Battery: {}% ({})",
-                                        battery_report.battery_capacity,
-                                        if battery_report.charging_status {
-                                            "Charging"
-                                        } else {
-                                            "Not Charging"
-                                        }
-                                    );
-                                }
-                            }
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } => {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
                     }
-                }
-                // thread::sleep(Duration::from_secs(1));
-            });
+                    _ => {
+                        println!("Unhandled event: {:?}", event);
+                    }
+                })
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        #[cfg(target_os = "macos")]
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    _ => {
+                        println!("Unhandled menu event: {:?}", event);
+                    }
+                })
+                .build(app)?;
+
+            start_controller_polling();
+
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn start_controller_polling() {
+    thread::spawn(|| loop {
+        let api = HidApi::new().expect("Failed to initialize HID API");
+        let devices = api.device_list();
+        for device in devices {
+            if device.vendor_id() == 0x054C
+                && (device.product_id() == 0x0CE6 || device.product_id() == 0x0DF2)
+            {
+                if let Ok(controller) = api.open(device.vendor_id(), device.product_id()) {
+                    let mut buf = [0u8; 64];
+
+                    if let Ok(len) = controller.read_timeout(&mut buf, 500) {
+                        if len > 30 {
+                            let battery_report = parse_battery(&buf, &device);
+                            println!(
+                                "Battery: {}% ({})",
+                                battery_report.battery_capacity,
+                                if battery_report.charging_status {
+                                    "Charging"
+                                } else {
+                                    "Not Charging"
+                                }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        thread::sleep(Duration::from_secs(10));
+    });
 }
 
 struct BatteryReport {
