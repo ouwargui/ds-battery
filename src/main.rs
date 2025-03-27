@@ -38,7 +38,7 @@ use windows::{
             },
             DirectWrite::{
                 DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWriteCreateFactory, IDWriteFactory,
                 IDWriteTextFormat, IDWriteTextLayout,
             },
@@ -89,10 +89,10 @@ fn main() {
             .CreateTextFormat(
                 w!("Segoe UI"),
                 None,
-                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                14.0,
+                16.0,
                 w!("en-us"),
             )
             .expect("Failed to create text format")
@@ -137,7 +137,7 @@ fn main() {
     }
 
     let corner_radius = 10.0;
-    let battery_percentage = 75;
+    let battery_percentage = 25;
     draw_content(
         &d2d_device_context,
         &dwrite_factory, // Pass DWrite factory
@@ -382,24 +382,9 @@ fn draw_content(
         a: 1.0,
     }; // Light gray outline/text
     let fill_color = match percentage {
-        0..=20 => D2D1_COLOR_F {
-            r: 1.0,
-            g: 0.2,
-            b: 0.2,
-            a: 1.0,
-        }, // Red
-        21..=50 => D2D1_COLOR_F {
-            r: 1.0,
-            g: 0.8,
-            b: 0.0,
-            a: 1.0,
-        }, // Yellow
-        _ => D2D1_COLOR_F {
-            r: 0.2,
-            g: 1.0,
-            b: 0.2,
-            a: 1.0,
-        }, // Green
+        0..=20 => rgba_to_d2d1_color_f(242, 27, 63, 255),
+        21..=50 => rgba_to_d2d1_color_f(255, 198, 10, 255),
+        _ => rgba_to_d2d1_color_f(43, 192, 22, 255),
     };
 
     // --- Create Brushes ---
@@ -442,7 +427,8 @@ fn draw_content(
     let icon_center_x = target_width / 2.0;
     let icon_top_y = target_height * 0.15; // Position icon 15% from the top
     let icon_bottom_y = icon_top_y + icon_height;
-    let outline_thickness = 2.0;
+    let outline_thickness = 5.0;
+    let battery_corner_radius = 4.0;
 
     // Battery Body
     let body_rect = D2D_RECT_F {
@@ -450,6 +436,12 @@ fn draw_content(
         top: icon_top_y,
         right: icon_center_x + icon_width / 2.0,
         bottom: icon_bottom_y,
+    };
+
+    let body_rounded_rect = D2D1_ROUNDED_RECT {
+        rect: body_rect,
+        radiusX: battery_corner_radius,
+        radiusY: battery_corner_radius,
     };
 
     // Battery Terminal
@@ -462,15 +454,23 @@ fn draw_content(
         bottom: icon_top_y + (icon_height + terminal_height) / 2.0,
     };
 
-    // Battery Fill Area (inside the body, accounting for outline)
-    let fill_margin = outline_thickness + 2.0; // Margin inside the outline
-    let max_fill_width = body_rect.right - body_rect.left - 2.0 * fill_margin;
+    // Battery Fill Area
+    // Inset by half the outline thickness to align with the inside edge of the stroke
+    let inset = outline_thickness / 2.0;
+    let fill_area_rect = D2D_RECT_F {
+        left: body_rect.left + inset,
+        top: body_rect.top + inset,
+        right: body_rect.right - inset,
+        bottom: body_rect.bottom - inset,
+    };
+    let max_fill_width = fill_area_rect.right - fill_area_rect.left;
     let fill_width = max_fill_width * (percentage as f32 / 100.0);
+    // The actual rectangle to fill
     let fill_rect = D2D_RECT_F {
-        left: body_rect.left + fill_margin,
-        top: body_rect.top + fill_margin,
-        right: body_rect.left + fill_margin + fill_width,
-        bottom: body_rect.bottom - fill_margin,
+        left: fill_area_rect.left,
+        top: fill_area_rect.top,
+        right: fill_area_rect.left + fill_width, // Calculate end based on percentage
+        bottom: fill_area_rect.bottom,
     };
 
     // Text Layout Area (below the icon)
@@ -490,14 +490,20 @@ fn draw_content(
         // 1. Draw Background
         render_target.FillRoundedRectangle(&bg_rounded_rect, &bg_brush);
 
-        // 2. Draw Battery Icon
-        // Outline
-        render_target.DrawRectangle(&body_rect, &outline_brush, outline_thickness, None);
-        render_target.FillRectangle(&terminal_rect, &outline_brush); // Solid terminal
         // Fill
         if fill_width > 0.0 {
             render_target.FillRectangle(&fill_rect, &fill_brush);
         }
+
+        // 2. Draw Battery Icon
+        // Outline
+        render_target.DrawRoundedRectangle(
+            &body_rounded_rect, // Use the rounded rect definition
+            &outline_brush,
+            outline_thickness,
+            None, // No stroke style needed
+        );
+        render_target.FillRectangle(&terminal_rect, &outline_brush); // Solid terminal
 
         // 3. Draw Text
         let text = format!("{}%", percentage);
@@ -529,6 +535,16 @@ fn draw_content(
             .expect("Failed to end draw");
 
         let _ = swap_chain.Present(1, DXGI_PRESENT::default());
+    }
+}
+
+#[inline]
+fn rgba_to_d2d1_color_f(r: u8, g: u8, b: u8, a: u8) -> D2D1_COLOR_F {
+    D2D1_COLOR_F {
+        r: (r as f32) / 255.0,
+        g: (g as f32) / 255.0,
+        b: (b as f32) / 255.0,
+        a: (a as f32) / 255.0,
     }
 }
 
