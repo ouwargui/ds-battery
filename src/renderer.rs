@@ -219,7 +219,7 @@ pub fn draw_content(
 }
 
 #[inline]
-pub fn rgba_to_d2d1_color_f(r: u8, g: u8, b: u8, a: u8) -> D2D1_COLOR_F {
+pub(crate) fn rgba_to_d2d1_color_f(r: u8, g: u8, b: u8, a: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
         r: (r as f32) / 255.0,
         g: (g as f32) / 255.0,

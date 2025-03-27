@@ -2,12 +2,18 @@ use windows::{
     Win32::{
         Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
         Graphics::Gdi::{BeginPaint, EndPaint, HBRUSH, PAINTSTRUCT},
-        UI::WindowsAndMessaging::{
-            self, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CreateWindowExW, DefWindowProcW, GWLP_USERDATA,
-            GetWindowLongPtrW, HICON, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW,
-            PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, SetTimer, SetWindowPos, ShowWindow, WM_DESTROY, WM_HOTKEY, WM_PAINT,
-            WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        UI::{
+            Input::KeyboardAndMouse::{
+                MOD_ALT, MOD_CONTROL, RegisterHotKey, UnregisterHotKey, VK_B,
+            },
+            WindowsAndMessaging::{
+                self, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
+                GWLP_USERDATA, GetWindowLongPtrW, HICON, HWND_TOPMOST, IDC_ARROW, KillTimer,
+                LoadCursorW, PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW,
+                SW_SHOWNOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, ShowWindow, WM_DESTROY, WM_HOTKEY, WM_PAINT, WM_TIMER, WNDCLASSEXW,
+                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            },
         },
     },
     core::{HRESULT, PCWSTR, w},
@@ -303,7 +309,7 @@ unsafe fn handle_fadeout_timer(app_state: &mut AppState) {
     }
 }
 
-pub fn show_and_set_topmost(hwnd: &HWND) {
+pub fn _show_and_set_topmost(hwnd: &HWND) {
     unsafe {
         let _ = ShowWindow(*hwnd, SW_SHOW);
 
@@ -317,4 +323,24 @@ pub fn show_and_set_topmost(hwnd: &HWND) {
             SWP_NOMOVE | SWP_NOSIZE,
         );
     }
+}
+
+pub fn associate_appstate_with_hwnd(hwnd: HWND, app_state: &mut AppState) {
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, app_state as *mut _ as isize);
+    }
+}
+
+pub fn register_app_hotkey(hwnd: HWND) -> Result<(), ()> {
+    let modifiers = MOD_CONTROL | MOD_ALT;
+    let vk = VK_B.0 as u32;
+    unsafe { RegisterHotKey(Some(hwnd), HOTKEY_ID_TOGGLE, modifiers, vk).unwrap() };
+    Ok(())
+}
+
+pub fn unregister_app_hotkey(hwnd: HWND) -> Result<(), ()> {
+    unsafe {
+        UnregisterHotKey(Some(hwnd), HOTKEY_ID_TOGGLE).unwrap();
+    }
+    Ok(())
 }

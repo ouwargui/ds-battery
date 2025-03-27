@@ -15,7 +15,7 @@ use windows::{
             },
             DirectComposition::{
                 DCompositionCreateDevice, IDCompositionAnimation, IDCompositionDevice,
-                IDCompositionEffectGroup, IDCompositionTarget,
+                IDCompositionEffectGroup, IDCompositionTarget, IDCompositionVisual,
             },
             DirectWrite::{
                 DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -36,6 +36,73 @@ use windows::{
 };
 
 use windows::core::Interface;
+
+const FADE_DURATION_SEC: f64 = 0.5;
+
+pub struct GraphicsResources {
+    pub d3d_device: ID3D11Device,
+    pub dxgi_device: IDXGIDevice,
+    pub dxgi_factory: IDXGIFactory2,
+    pub dcomp_device: IDCompositionDevice,
+    pub dcomp_target: IDCompositionTarget,
+    pub dcomp_visual: IDCompositionVisual,
+    pub dcomp_effect_group: IDCompositionEffectGroup,
+    pub swap_chain: IDXGISwapChain1,
+    pub d2d_factory: ID2D1Factory1,
+    pub d2d_device_context: ID2D1DeviceContext,
+    pub dwrite_factory: IDWriteFactory,
+    pub text_format: IDWriteTextFormat,
+    pub fade_out_animation: Option<IDCompositionAnimation>,
+}
+
+pub fn initialize_graphics(
+    hwnd: HWND,
+    window_width: u32,
+    window_height: u32,
+) -> Result<GraphicsResources, ()> {
+    // Core devices
+    let (d3d_device, dxgi_device) = create_d3d_device();
+    let dxgi_factory = get_dxgi_factory(&d3d_device);
+    let dcomp_device = create_dcomp_device(&dxgi_device);
+    let d2d_factory = create_d2d_factory();
+    let dwrite_factory = create_dwrite_factory();
+    let d2d_context = create_d2d_device_context(&d2d_factory, &dxgi_device);
+    let text_format = create_text_format(&dwrite_factory);
+
+    // Composition specific
+    let dcomp_target = create_dcomp_target(&dcomp_device, hwnd);
+    let dcomp_visual = unsafe { dcomp_device.CreateVisual().unwrap() };
+    let dcomp_effect_group = unsafe { dcomp_device.CreateEffectGroup().unwrap() };
+    let swap_chain =
+        create_composition_swapchain(&dxgi_factory, &d3d_device, window_width, window_height);
+
+    // Link composition elements and set initial state
+    unsafe {
+        dcomp_visual.SetEffect(&dcomp_effect_group);
+        apply_opacity(&dcomp_device, &dcomp_effect_group, 0.0); // Start transparent
+        dcomp_visual.SetContent(&swap_chain);
+        dcomp_target.SetRoot(&dcomp_visual);
+        // Initial commit happens after returning to main
+    };
+
+    let fade_out_animation = create_opacity_animation(&dcomp_device, FADE_DURATION_SEC, 1.0, 0.0);
+
+    Ok(GraphicsResources {
+        d3d_device,
+        dxgi_device,
+        dxgi_factory,
+        dcomp_device,
+        dcomp_target,
+        dcomp_visual,
+        dcomp_effect_group,
+        swap_chain,
+        d2d_factory,
+        d2d_device_context: d2d_context,
+        dwrite_factory,
+        text_format,
+        fade_out_animation: Some(fade_out_animation),
+    })
+}
 
 pub fn create_d3d_device() -> (ID3D11Device, IDXGIDevice) {
     let mut d3d_device = None;
