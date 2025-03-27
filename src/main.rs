@@ -1,38 +1,29 @@
-// use ds_battery::{direct_composition::Overlay, dualsense_manager::start_controller_polling};
-// use std::{thread, time::Duration};
-
-// fn main() {
-//     // start_controller_polling();
-//     let overlay = Overlay::new().expect("Failed to initialize DirectComposition overlay");
-//     overlay.run_message_loop();
-
-//     // loop {
-//     //     thread::sleep(Duration::from_secs(1));
-//     // }
-// }
-
+mod dualsense;
 mod graphics;
 mod renderer;
 mod window;
 
-use windows::{
-    Win32::{
-        Foundation::{GetLastError, HINSTANCE, HWND},
-        Graphics::{
-            Direct2D::{ID2D1DeviceContext, ID2D1Factory1},
-            Direct3D11::ID3D11Device,
-            DirectComposition::{IDCompositionDevice, IDCompositionTarget, IDCompositionVisual},
-            DirectWrite::{IDWriteFactory, IDWriteTextFormat},
-            Dxgi::{IDXGIDevice, IDXGIFactory2, IDXGISwapChain1},
-        },
-        System::LibraryLoader::GetModuleHandleW,
-        UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG, TranslateMessage},
+use std::{sync::mpsc, thread, time::Duration};
+
+use dualsense::BatteryReport;
+use windows::Win32::{
+    Foundation::{HINSTANCE, HWND},
+    Graphics::{
+        Direct2D::{ID2D1DeviceContext, ID2D1Factory1},
+        Direct3D11::ID3D11Device,
+        DirectComposition::{IDCompositionDevice, IDCompositionTarget, IDCompositionVisual},
+        DirectWrite::{IDWriteFactory, IDWriteTextFormat},
+        Dxgi::{IDXGIDevice, IDXGIFactory2, IDXGISwapChain1},
     },
-    core::{BOOL, HRESULT},
+    System::LibraryLoader::GetModuleHandleW,
+    UI::WindowsAndMessaging::{
+        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
+    },
 };
 
 const WINDOW_WIDTH: i32 = 200;
 const WINDOW_HEIGHT: i32 = 150;
+const CORNER_RADIUS: f32 = 10.0;
 
 struct AppState {
     hwnd: HWND,
@@ -47,9 +38,15 @@ struct AppState {
     d2d_device_context: ID2D1DeviceContext,
     dwrite_factory: IDWriteFactory,
     text_format: IDWriteTextFormat,
+
+    battery_receiver: mpsc::Receiver<dualsense::BatteryReport>,
+    last_battery_report: Option<dualsense::BatteryReport>,
 }
 
-fn main() {
+fn main() -> Result<(), ()> {
+    let (battery_sender, battery_receiver) = mpsc::channel::<dualsense::BatteryReport>();
+    dualsense::poll_controller_battery(battery_sender);
+
     let hinstance: HINSTANCE = unsafe {
         GetModuleHandleW(None)
             .expect("Failed to create module handle")
@@ -91,7 +88,7 @@ fn main() {
         dcomp_device.Commit().expect("Failed to commit");
     }
 
-    let app_state = AppState {
+    let mut app_state = AppState {
         hwnd,
         d3d_device,
         dxgi_device,
@@ -104,51 +101,66 @@ fn main() {
         d2d_factory,
         dwrite_factory,
         text_format,
+        battery_receiver,
+        last_battery_report: None,
     };
 
     window::show_and_set_topmost(&app_state.hwnd);
 
-    let corner_radius = 10.0;
-    let battery_percentage = 25;
     renderer::draw_content(
         &app_state.d2d_device_context,
         &app_state.dwrite_factory, // Pass DWrite factory
         &app_state.text_format,    // Pass text format
         &app_state.swap_chain,
-        corner_radius,
-        battery_percentage,
+        CORNER_RADIUS,
+        BatteryReport {
+            battery_capacity: 0,
+            charging_status: false,
+            is_healthy: false,
+        }, // inital percentage
     );
 
     let mut msg = MSG::default();
     loop {
-        let should_break = run_window(&mut msg).expect("Failed to run window");
-        if should_break {
-            break;
-        }
-    }
-}
+        while unsafe { PeekMessageW(&mut msg, Some(HWND::default()), 0, 0, PM_REMOVE) }.as_bool() {
+            if msg.message == WM_QUIT {
+                return Ok(());
+            }
 
-fn run_window(msg: &mut MSG) -> Result<bool, windows::core::Error> {
-    // GetMessageW waits for a message
-    let result: BOOL = unsafe { GetMessageW(msg, Some(HWND::default()), 0, 0) };
-
-    match result.0 {
-        -1 => {
-            // Error occurred
-            let error = unsafe { GetLastError() };
-            return Err(windows::core::Error::new(
-                HRESULT::from(error),
-                "GetMessageW error",
-            ));
-        }
-        0 => Ok(true),
-        _ => {
-            // Message received, process it
             unsafe {
-                let _ = TranslateMessage(msg); // Translates virtual-key messages
-                DispatchMessageW(msg); // Dispatches message to the window procedure (wndproc)
-            };
-            Ok(false)
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
+
+        match app_state.battery_receiver.try_recv() {
+            Ok(new_report) => {
+                let needs_redraw = match &app_state.last_battery_report {
+                    Some(last_report) => {
+                        new_report.battery_capacity != last_report.battery_capacity
+                    }
+                    None => true,
+                };
+
+                if needs_redraw {
+                    renderer::draw_content(
+                        &app_state.d2d_device_context,
+                        &app_state.dwrite_factory,
+                        &app_state.text_format,
+                        &app_state.swap_chain,
+                        CORNER_RADIUS,
+                        new_report.clone(),
+                    );
+
+                    app_state.last_battery_report = Some(new_report);
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                eprintln!("Battery receiver disconnected");
+                break Err(());
+            }
+            _ => {}
+        }
+        thread::sleep(Duration::from_millis(100));
     }
 }

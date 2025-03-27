@@ -155,7 +155,7 @@ pub fn create_text_format(dwrite_factory: &IDWriteFactory) -> IDWriteTextFormat 
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                16.0,
+                22.0,
                 w!("en-us"),
             )
             .expect("Failed to create text format");
