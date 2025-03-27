@@ -8,11 +8,11 @@ use windows::{
             },
             WindowsAndMessaging::{
                 self, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
-                GWLP_USERDATA, GetWindowLongPtrW, HICON, HWND_TOPMOST, IDC_ARROW, KillTimer,
-                LoadCursorW, PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW,
+                DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HICON, HWND_TOPMOST, IDC_ARROW,
+                KillTimer, LoadCursorW, PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW,
                 SW_SHOWNOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, ShowWindow, WM_DESTROY, WM_HOTKEY, WM_PAINT, WM_TIMER, WNDCLASSEXW,
-                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                SetWindowPos, ShowWindow, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_PAINT,
+                WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
@@ -20,8 +20,8 @@ use windows::{
 };
 
 use crate::{
-    AppState, HOTKEY_ID_TOGGLE, SHOW_DURATION_MS, TIMER_ID_FADEOUT, VisibilityState, WINDOW_HEIGHT,
-    WINDOW_WIDTH, graphics, renderer,
+    AppState, HOTKEY_ID_TOGGLE, IDM_CONFIGURE, IDM_EXIT, SHOW_DURATION_MS, TIMER_ID_FADEOUT,
+    VisibilityState, WINDOW_HEIGHT, WINDOW_WIDTH, WM_APP_TRAYMSG, graphics, renderer, tray,
 };
 
 pub fn create_overlay_window(hinstance: HINSTANCE) -> Result<HWND, windows::core::Error> {
@@ -94,58 +94,6 @@ pub fn create_overlay_window(hinstance: HINSTANCE) -> Result<HWND, windows::core
     println!("HWND created: {:?}", hwnd);
 
     Ok(hwnd)
-}
-
-unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let app_state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-
-    if app_state_ptr != 0 {
-        let app_state = unsafe { &mut *(app_state_ptr as *mut AppState) };
-
-        match msg {
-            WM_HOTKEY => {
-                if wparam.0 as i32 == HOTKEY_ID_TOGGLE {
-                    println!("WM_HOTKEY received");
-                    unsafe { handle_hotkey(app_state) };
-                    return LRESULT(0);
-                }
-            }
-            WM_TIMER => {
-                if wparam.0 == TIMER_ID_FADEOUT {
-                    println!("WM_TIMER received");
-                    unsafe { handle_fadeout_timer(app_state) };
-                    return LRESULT(0);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    match msg {
-        WM_PAINT => {
-            println!("WM_PAINT received");
-            let mut ps = PAINTSTRUCT::default();
-            let _hdc = unsafe { BeginPaint(hwnd, &mut ps) };
-            unsafe {
-                let _ = EndPaint(hwnd, &ps);
-            };
-            LRESULT(0)
-        }
-        WM_DESTROY => {
-            // This message is sent when the window is being destroyed (e.g., user clicks close button)
-            println!("WM_DESTROY received");
-            // Post a WM_QUIT message to the message queue to signal the message loop to exit
-            unsafe {
-                KillTimer(Some(hwnd), TIMER_ID_FADEOUT).expect("Failed to kill timer");
-                PostQuitMessage(0)
-            };
-            LRESULT(0)
-        }
-        _ => {
-            // For messages we don't handle explicitly, pass them to the default window procedure
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
-    }
 }
 
 unsafe fn handle_hotkey(app_state: &mut AppState) {
@@ -343,4 +291,85 @@ pub fn unregister_app_hotkey(hwnd: HWND) -> Result<(), ()> {
         UnregisterHotKey(Some(hwnd), HOTKEY_ID_TOGGLE).unwrap();
     }
     Ok(())
+}
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let app_state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+
+    if msg == WM_APP_TRAYMSG {
+        let mouse_msg = (lparam.0 & 0xFFFF) as u32;
+        match mouse_msg {
+            WM_RBUTTONUP => {
+                println!("Tray icon right-clicked");
+                tray::show_context_menu(hwnd).unwrap_or_else(|_| {
+                    eprintln!("Failed to show context menu");
+                });
+                return LRESULT(0);
+            }
+            _ => {}
+        }
+    }
+
+    if app_state_ptr != 0 {
+        let app_state = unsafe { &mut *(app_state_ptr as *mut AppState) };
+
+        match msg {
+            WM_HOTKEY => {
+                if wparam.0 as i32 == HOTKEY_ID_TOGGLE {
+                    println!("WM_HOTKEY received");
+                    unsafe { handle_hotkey(app_state) };
+                    return LRESULT(0);
+                }
+            }
+            WM_TIMER => {
+                if wparam.0 == TIMER_ID_FADEOUT {
+                    println!("WM_TIMER received");
+                    unsafe { handle_fadeout_timer(app_state) };
+                    return LRESULT(0);
+                }
+            }
+            WM_COMMAND => {
+                let menu_id = (wparam.0 & 0xFFFF) as u16;
+                match menu_id {
+                    IDM_CONFIGURE => {
+                        println!("Configure menu item clicked");
+                        return LRESULT(0);
+                    }
+                    IDM_EXIT => {
+                        println!("Exit menu item clicked");
+                        let _ = unsafe { DestroyWindow(hwnd) };
+                        return LRESULT(0);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match msg {
+        WM_PAINT => {
+            println!("WM_PAINT received");
+            let mut ps = PAINTSTRUCT::default();
+            let _hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+            unsafe {
+                let _ = EndPaint(hwnd, &ps);
+            };
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            // This message is sent when the window is being destroyed (e.g., user clicks close button)
+            println!("WM_DESTROY received");
+            // Post a WM_QUIT message to the message queue to signal the message loop to exit
+            unsafe {
+                KillTimer(Some(hwnd), TIMER_ID_FADEOUT).expect("Failed to kill timer");
+                PostQuitMessage(0)
+            };
+            LRESULT(0)
+        }
+        _ => {
+            // For messages we don't handle explicitly, pass them to the default window procedure
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+    }
 }

@@ -1,26 +1,31 @@
 mod dualsense;
 mod graphics;
 mod renderer;
+mod tray;
 mod window;
 
 use std::{sync::mpsc, thread, time::Duration};
 
-use windows::Win32::{
-    Foundation::{HINSTANCE, HWND},
-    Graphics::{
-        Direct2D::{ID2D1DeviceContext, ID2D1Factory1},
-        Direct3D11::ID3D11Device,
-        DirectComposition::{
-            IDCompositionAnimation, IDCompositionDevice, IDCompositionEffectGroup,
-            IDCompositionTarget, IDCompositionVisual,
+use windows::{
+    Win32::{
+        Foundation::{HINSTANCE, HWND},
+        Graphics::{
+            Direct2D::{ID2D1DeviceContext, ID2D1Factory1},
+            Direct3D11::ID3D11Device,
+            DirectComposition::{
+                IDCompositionAnimation, IDCompositionDevice, IDCompositionEffectGroup,
+                IDCompositionTarget, IDCompositionVisual,
+            },
+            DirectWrite::{IDWriteFactory, IDWriteTextFormat},
+            Dxgi::{IDXGIDevice, IDXGIFactory2, IDXGISwapChain1},
         },
-        DirectWrite::{IDWriteFactory, IDWriteTextFormat},
-        Dxgi::{IDXGIDevice, IDXGIFactory2, IDXGISwapChain1},
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            DispatchMessageW, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, LoadImageW, MSG,
+            PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT, WM_USER,
+        },
     },
-    System::LibraryLoader::GetModuleHandleW,
-    UI::WindowsAndMessaging::{
-        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
-    },
+    core::w,
 };
 
 pub const WINDOW_WIDTH: i32 = 200;
@@ -29,6 +34,10 @@ const CORNER_RADIUS: f32 = 10.0;
 const HOTKEY_ID_TOGGLE: i32 = 1;
 const TIMER_ID_FADEOUT: usize = 1;
 const SHOW_DURATION_MS: u32 = 3000;
+
+pub const WM_APP_TRAYMSG: u32 = WM_USER + 1;
+pub const IDM_CONFIGURE: u16 = 1001;
+pub const IDM_EXIT: u16 = 1002;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum VisibilityState {
@@ -57,14 +66,40 @@ struct AppState {
     visibility_state: VisibilityState,
     fadeout_timer_id: Option<usize>,
     fade_out_animation: Option<IDCompositionAnimation>,
+    h_icon: Option<HICON>,
 }
 
 fn main() -> Result<(), ()> {
     let battery_receiver = dualsense::setup_controller_polling().unwrap();
 
     let hinstance: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap().into() };
-
     let hwnd = window::create_overlay_window(hinstance).unwrap();
+
+    let icon_path = w!("app_icon.ico");
+    let h_icon = unsafe {
+        LoadImageW(
+            None,
+            icon_path,
+            IMAGE_ICON,
+            0,
+            0,
+            LR_LOADFROMFILE | LR_DEFAULTSIZE,
+        )
+        .map(|handle| HICON(handle.0))
+        .map_err(|e| {
+            eprintln!("Failed to load icon: {:?}", e);
+            e
+        })
+        .and_then(|hicon| {
+            if hicon.is_invalid() {
+                eprintln!("Invalid icon handle");
+                Err(windows::core::Error::from_win32())
+            } else {
+                Ok(hicon)
+            }
+        })
+        .ok()
+    };
 
     let graphics_resources =
         graphics::initialize_graphics(hwnd, WINDOW_WIDTH as u32, WINDOW_HEIGHT as u32).unwrap();
@@ -88,9 +123,15 @@ fn main() -> Result<(), ()> {
         dwrite_factory: graphics_resources.dwrite_factory,
         text_format: graphics_resources.text_format,
         fade_out_animation: graphics_resources.fade_out_animation,
+        h_icon,
     };
 
     window::associate_appstate_with_hwnd(app_state.hwnd, &mut app_state);
+    if let Some(icon) = app_state.h_icon {
+        tray::add_tray_icon(app_state.hwnd, icon, WM_APP_TRAYMSG).unwrap();
+    } else {
+        eprintln!("Failed to load icon, not adding to tray");
+    }
     window::register_app_hotkey(app_state.hwnd).unwrap();
 
     unsafe { app_state.dcomp_device.Commit().unwrap() };
@@ -102,6 +143,9 @@ fn main() -> Result<(), ()> {
             if msg.message == WM_QUIT {
                 println!("Received WM_QUIT");
                 window::unregister_app_hotkey(app_state.hwnd).unwrap();
+                tray::remove_tray_icon(app_state.hwnd).unwrap_or_else(|_| {
+                    eprintln!("Failed to remove tray icon");
+                });
                 return Ok(());
             }
 
