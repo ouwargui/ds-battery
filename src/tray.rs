@@ -1,6 +1,6 @@
 use windows::{
     Win32::{
-        Foundation::{GetLastError, HWND, LPARAM, POINT, WPARAM},
+        Foundation::{GetLastError, HWND, POINT},
         UI::{
             Shell::{
                 NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION,
@@ -8,8 +8,7 @@ use windows::{
             },
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, HMENU, MF_STRING,
-                PostMessageW, SetForegroundWindow, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-                TrackPopupMenu, WM_COMMAND,
+                SetForegroundWindow, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
             },
         },
     },
@@ -72,7 +71,7 @@ pub fn remove_tray_icon(hwnd: HWND) -> Result<(), ()> {
     Ok(())
 }
 
-pub fn show_context_menu(hwnd: HWND) -> Result<(), ()> {
+pub fn show_context_menu(hwnd: HWND) -> Result<(), windows::core::Error> {
     unsafe {
         let hmenu = CreatePopupMenu().unwrap();
 
@@ -91,12 +90,11 @@ pub fn show_context_menu(hwnd: HWND) -> Result<(), ()> {
 
         let mut point = POINT::default();
         GetCursorPos(&mut point).unwrap();
-
         SetForegroundWindow(hwnd).unwrap();
 
-        let selected_cmd = TrackPopupMenu(
+        let success = TrackPopupMenu(
             hmenu,
-            TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            TPM_LEFTALIGN | TPM_RIGHTBUTTON,
             point.x,
             point.y,
             Some(0),
@@ -104,14 +102,15 @@ pub fn show_context_menu(hwnd: HWND) -> Result<(), ()> {
             None,
         );
 
-        if !selected_cmd.as_bool() {
-            PostMessageW(
-                Some(hwnd),
-                WM_COMMAND,
-                WPARAM(selected_cmd.as_bool() as usize),
-                LPARAM(0),
-            )
-            .unwrap();
+        if !success.as_bool() {
+            eprintln!(
+                "TrackPopupMenu failed to display menu. GetLastError: {:?}",
+                GetLastError()
+            );
+            // Return an error or handle appropriately
+            return Err(windows::core::Error::from_win32());
+        } else {
+            println!("TrackPopupMenu displayed successfully. Waiting for WM_COMMAND...");
         }
     }
     Ok(())

@@ -19,7 +19,7 @@ pub fn draw_content(
     swap_chain: &IDXGISwapChain1,
     corner_radius: f32,
     battery_percentage: u8, // battery percentage (0-100)
-    battery_charging: bool,
+    _battery_charging: bool,
 ) {
     // --- Get Render Target ---
     let surface: windows::Win32::Graphics::Dxgi::IDXGISurface =
