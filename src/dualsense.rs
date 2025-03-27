@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct BatteryReport {
     pub battery_capacity: u8,

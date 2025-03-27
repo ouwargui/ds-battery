@@ -37,6 +37,7 @@ enum VisibilityState {
     FadingOut,
 }
 
+#[allow(dead_code)]
 struct AppState {
     hwnd: HWND,
     d3d_device: ID3D11Device,

@@ -78,10 +78,10 @@ pub fn initialize_graphics(
 
     // Link composition elements and set initial state
     unsafe {
-        dcomp_visual.SetEffect(&dcomp_effect_group);
+        dcomp_visual.SetEffect(&dcomp_effect_group).unwrap();
         apply_opacity(&dcomp_device, &dcomp_effect_group, 0.0); // Start transparent
-        dcomp_visual.SetContent(&swap_chain);
-        dcomp_target.SetRoot(&dcomp_visual);
+        dcomp_visual.SetContent(&swap_chain).unwrap();
+        dcomp_target.SetRoot(&dcomp_visual).unwrap();
         // Initial commit happens after returning to main
     };
 
