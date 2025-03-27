@@ -14,7 +14,8 @@ use windows::{
                 ID3D11Device,
             },
             DirectComposition::{
-                DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget,
+                DCompositionCreateDevice, IDCompositionAnimation, IDCompositionDevice,
+                IDCompositionEffectGroup, IDCompositionTarget,
             },
             DirectWrite::{
                 DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -168,5 +169,61 @@ pub fn create_text_format(dwrite_factory: &IDWriteFactory) -> IDWriteTextFormat 
             .expect("Failed to set paragraph alignment");
 
         tx_fmt
+    }
+}
+
+pub fn create_opacity_animation(
+    dcomp_device: &IDCompositionDevice,
+    duration_sec: f64,
+    start_opacity: f32,
+    end_opacity: f32,
+) -> IDCompositionAnimation {
+    if duration_sec <= 0.0 {
+        eprintln!("Invalid duration for opacity animation: {}", duration_sec);
+    }
+
+    let linear_coefficient = (end_opacity - start_opacity) / (duration_sec as f32);
+
+    unsafe {
+        let animation = dcomp_device
+            .CreateAnimation()
+            .expect("Failed to create animation");
+
+        animation
+            .AddCubic(0.0, start_opacity, linear_coefficient, 0.0, 0.0)
+            .expect("Failed to add cubic");
+
+        animation
+    }
+}
+
+pub fn apply_opacity(
+    dcomp_device: &IDCompositionDevice,
+    effect_group: &IDCompositionEffectGroup,
+    opacity: f32,
+) -> () {
+    unsafe {
+        let static_animation = dcomp_device
+            .CreateAnimation()
+            .expect("Failed to create animation");
+
+        static_animation
+            .AddCubic(0.0, opacity, 0.0, 0.0, 0.0)
+            .expect("Failed to add cubic");
+
+        effect_group
+            .SetOpacity(Some(&static_animation))
+            .expect("Failed to set visual opacity");
+    }
+}
+
+pub fn apply_opacity_animation(
+    effect_group: &IDCompositionEffectGroup,
+    animation: &IDCompositionAnimation,
+) -> () {
+    unsafe {
+        effect_group
+            .SetOpacity(Some(animation))
+            .expect("Failed to set opacity")
     }
 }

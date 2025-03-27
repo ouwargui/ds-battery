@@ -3,16 +3,20 @@ use windows::{
         Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
         Graphics::Gdi::{BeginPaint, EndPaint, HBRUSH, PAINTSTRUCT},
         UI::WindowsAndMessaging::{
-            self, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CreateWindowExW, DefWindowProcW, HICON,
-            HWND_TOPMOST, IDC_ARROW, LoadCursorW, PostQuitMessage, RegisterClassExW, SW_SHOW,
-            SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow, WM_DESTROY, WM_PAINT, WNDCLASSEXW,
-            WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            self, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CreateWindowExW, DefWindowProcW, GWLP_USERDATA,
+            GetWindowLongPtrW, HICON, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW,
+            PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SetTimer, SetWindowPos, ShowWindow, WM_DESTROY, WM_HOTKEY, WM_PAINT,
+            WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
     core::{HRESULT, PCWSTR, w},
 };
 
-use crate::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::{
+    AppState, HOTKEY_ID_TOGGLE, SHOW_DURATION_MS, TIMER_ID_FADEOUT, VisibilityState, WINDOW_HEIGHT,
+    WINDOW_WIDTH, graphics, renderer,
+};
 
 pub fn create_overlay_window(hinstance: HINSTANCE) -> Result<HWND, windows::core::Error> {
     let class_name = w!("overlay_window_class");
@@ -87,29 +91,214 @@ pub fn create_overlay_window(hinstance: HINSTANCE) -> Result<HWND, windows::core
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let app_state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+
+    if app_state_ptr != 0 {
+        let app_state = unsafe { &mut *(app_state_ptr as *mut AppState) };
+
+        match msg {
+            WM_HOTKEY => {
+                if wparam.0 as i32 == HOTKEY_ID_TOGGLE {
+                    println!("WM_HOTKEY received");
+                    unsafe { handle_hotkey(app_state) };
+                    return LRESULT(0);
+                }
+            }
+            WM_TIMER => {
+                if wparam.0 == TIMER_ID_FADEOUT {
+                    println!("WM_TIMER received");
+                    unsafe { handle_fadeout_timer(app_state) };
+                    return LRESULT(0);
+                }
+            }
+            _ => {}
+        }
+    }
+
     match msg {
         WM_PAINT => {
-            // Basic paint handling: just validate the region
-            // More complex drawing would happen here
             println!("WM_PAINT received");
             let mut ps = PAINTSTRUCT::default();
             let _hdc = unsafe { BeginPaint(hwnd, &mut ps) };
-            // FillRect(hdc, &ps.rcPaint, HBRUSH((COLOR_WINDOW.0 + 1) as isize)); // Example drawing
             unsafe {
                 let _ = EndPaint(hwnd, &ps);
             };
-            LRESULT(0) // Indicate message was handled
+            LRESULT(0)
         }
         WM_DESTROY => {
             // This message is sent when the window is being destroyed (e.g., user clicks close button)
             println!("WM_DESTROY received");
             // Post a WM_QUIT message to the message queue to signal the message loop to exit
-            unsafe { PostQuitMessage(0) };
-            LRESULT(0) // Indicate message was handled
+            unsafe {
+                KillTimer(Some(hwnd), TIMER_ID_FADEOUT).expect("Failed to kill timer");
+                PostQuitMessage(0)
+            };
+            LRESULT(0)
         }
         _ => {
             // For messages we don't handle explicitly, pass them to the default window procedure
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+    }
+}
+
+unsafe fn handle_hotkey(app_state: &mut AppState) {
+    match app_state.visibility_state {
+        VisibilityState::Hidden | VisibilityState::FadingOut => {
+            println!("Showing window");
+            app_state.visibility_state = VisibilityState::Visible;
+
+            if let Some(old_timer_id) = app_state.fadeout_timer_id.take() {
+                println!("Killing previous timer {}", old_timer_id);
+                unsafe {
+                    KillTimer(Some(app_state.hwnd), old_timer_id).expect("Failed to kill timer")
+                };
+            }
+
+            graphics::apply_opacity(&app_state.dcomp_device, &app_state.dcomp_effect_group, 1.0);
+            match unsafe { app_state.dcomp_device.Commit() } {
+                Ok(_) => println!("Committed DComp changes successfully in handle_hotkey."),
+                Err(e) => eprintln!("!!! FAILED to commit DComp changes in handle_hotkey: {}", e),
+            };
+
+            unsafe {
+                let _ = ShowWindow(app_state.hwnd, SW_SHOWNOACTIVATE);
+            };
+
+            let percent_to_draw = app_state
+                .last_battery_report
+                .as_ref()
+                .map_or(0, |r| r.battery_capacity);
+            let charging_to_draw = app_state
+                .last_battery_report
+                .as_ref()
+                .map_or(false, |r| r.charging_status);
+            renderer::draw_content(
+                &app_state.d2d_device_context,
+                &app_state.dwrite_factory,
+                &app_state.text_format,
+                &app_state.swap_chain,
+                crate::CORNER_RADIUS,
+                percent_to_draw,
+                charging_to_draw,
+            );
+
+            let new_timer_id = unsafe {
+                SetTimer(
+                    Some(app_state.hwnd),
+                    TIMER_ID_FADEOUT,
+                    SHOW_DURATION_MS,
+                    None,
+                )
+            };
+            if new_timer_id == 0 {
+                eprintln!(
+                    "!!! FAILED to set initial fadeout timer! Error: {:?}",
+                    unsafe { GetLastError() }
+                );
+                app_state.fadeout_timer_id = None; // Ensure state is consistent
+            } else {
+                println!(
+                    "Set initial timer. ID: {}, Duration: {}ms",
+                    new_timer_id, SHOW_DURATION_MS
+                );
+                app_state.fadeout_timer_id = Some(new_timer_id); // Store the NEW ID
+            }
+        }
+        VisibilityState::Visible => {
+            println!("Window already visible, resetting timer");
+            if let Some(timer_id) = app_state.fadeout_timer_id {
+                println!("Killing existing timer {}", timer_id);
+                unsafe { KillTimer(Some(app_state.hwnd), timer_id).expect("Failed to kill timer") };
+                let new_timer_id = unsafe {
+                    SetTimer(
+                        Some(app_state.hwnd),
+                        TIMER_ID_FADEOUT,
+                        SHOW_DURATION_MS,
+                        None,
+                    )
+                };
+                if new_timer_id == 0 {
+                    eprintln!("!!! FAILED to set fadeout timer! Error: {:?}", unsafe {
+                        GetLastError()
+                    });
+                    app_state.fadeout_timer_id = None;
+                } else {
+                    println!(
+                        "SetTimer succeeded. Timer ID: {}, Duration: {}ms",
+                        timer_id, SHOW_DURATION_MS
+                    );
+                    app_state.fadeout_timer_id = Some(new_timer_id);
+                }
+            } else {
+                eprintln!("Warning: State is visible but no timer ID found. Setting new timer.");
+                let new_timer_id = unsafe {
+                    SetTimer(
+                        Some(app_state.hwnd),
+                        TIMER_ID_FADEOUT,
+                        SHOW_DURATION_MS,
+                        None,
+                    )
+                };
+                if new_timer_id == 0 {
+                    eprintln!("!!! FAILED to set fadeout timer! Error: {:?}", unsafe {
+                        GetLastError()
+                    });
+                    app_state.fadeout_timer_id = None;
+                } else {
+                    println!(
+                        "SetTimer succeeded. Timer ID: {}, Duration: {}ms",
+                        new_timer_id, SHOW_DURATION_MS
+                    );
+                    app_state.fadeout_timer_id = Some(new_timer_id);
+                }
+            }
+        }
+    }
+}
+
+unsafe fn handle_fadeout_timer(app_state: &mut AppState) {
+    println!(
+        "handle_fadeout_timer called. Current state: {:?}",
+        app_state.visibility_state
+    );
+
+    if app_state.visibility_state == VisibilityState::Visible {
+        println!("Fading out window");
+        app_state.visibility_state = VisibilityState::FadingOut;
+
+        if let Some(timer_id) = app_state.fadeout_timer_id.take() {
+            unsafe { KillTimer(Some(app_state.hwnd), timer_id).expect("Failed to kill timer") };
+        } else {
+            println!("Warning: Fadeout timer ID was already None.");
+        }
+
+        if let Some(anim) = &app_state.fade_out_animation {
+            println!("apply_opacity_animation called successfully.");
+            graphics::apply_opacity_animation(&app_state.dcomp_effect_group, anim);
+        } else {
+            eprintln!("!!! Error: fade_out_animation object is None!");
+
+            app_state.visibility_state = VisibilityState::Hidden;
+            graphics::apply_opacity(&app_state.dcomp_device, &app_state.dcomp_effect_group, 0.0);
+            unsafe {
+                ShowWindow(app_state.hwnd, SW_HIDE).expect("Failed to show window");
+            };
+        }
+
+        unsafe { app_state.dcomp_device.Commit().expect("Failed to commit") };
+    } else {
+        println!(
+            "handle_fadeout_timer called but state was not Visible ({:?}). Ignoring.",
+            app_state.visibility_state
+        );
+        graphics::apply_opacity(&app_state.dcomp_device, &app_state.dcomp_effect_group, 0.0);
+        unsafe {
+            ShowWindow(app_state.hwnd, SW_HIDE).expect("Failed to show window");
+        };
+        if let Some(timer_id) = app_state.fadeout_timer_id.take() {
+            println!("Killing unexpected timer {}", timer_id);
+            unsafe { KillTimer(Some(app_state.hwnd), timer_id).expect("Failed to kill timer") };
         }
     }
 }
