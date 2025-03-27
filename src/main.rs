@@ -11,6 +11,8 @@
 //     // }
 // }
 
+use windows_numerics::Vector2;
+
 use windows::{
     Win32::{
         Foundation::{GetLastError, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, WPARAM},
@@ -24,7 +26,7 @@ use windows::{
                 D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
                 D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
                 D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1CreateFactory,
-                ID2D1DeviceContext, ID2D1Factory1,
+                ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
             },
             Direct3D::D3D_DRIVER_TYPE_HARDWARE,
             Direct3D11::{
@@ -34,13 +36,19 @@ use windows::{
             DirectComposition::{
                 DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget,
             },
+            DirectWrite::{
+                DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                DWRITE_TEXT_ALIGNMENT_CENTER, DWriteCreateFactory, IDWriteFactory,
+                IDWriteTextFormat, IDWriteTextLayout,
+            },
             Dxgi::{
                 Common::{
                     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
                 },
                 DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice,
-                IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
+                IDXGIFactory2, IDXGISwapChain1,
             },
             Gdi::{BeginPaint, EndPaint, HBRUSH, PAINTSTRUCT},
         },
@@ -71,6 +79,34 @@ fn main() {
     let (d3d_device, dxgi_device) = create_d3d_device();
     let dcomp_device = create_dcomp_device(&dxgi_device);
     let dcomp_target = create_dcomp_target(&dcomp_device, hwnd);
+
+    let dwrite_factory: IDWriteFactory = unsafe {
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).expect("Failed to create dwrite factory")
+    };
+
+    let text_format: IDWriteTextFormat = unsafe {
+        dwrite_factory
+            .CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                14.0,
+                w!("en-us"),
+            )
+            .expect("Failed to create text format")
+    };
+    // Center align the text
+    unsafe {
+        text_format
+            .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)
+            .expect("Failed to set text alignment");
+        text_format
+            .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+            .expect("Failed to set paragraph alignment");
+    }
+
     let d2d_factory = create_d2d_factory();
     let d2d_device_context = create_d2d_device_context(&d2d_factory, &dxgi_device);
 
@@ -100,7 +136,16 @@ fn main() {
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
 
-    draw_background(&d2d_device_context, &swap_chain, 0.0, 0.0, 0.0, 0.7, 10.0);
+    let corner_radius = 10.0;
+    let battery_percentage = 75;
+    draw_content(
+        &d2d_device_context,
+        &dwrite_factory, // Pass DWrite factory
+        &text_format,    // Pass text format
+        &swap_chain,
+        corner_radius,
+        battery_percentage,
+    );
 
     let mut msg = MSG::default();
     loop {
@@ -287,21 +332,17 @@ fn create_composition_swapchain(
     }
 }
 
-fn draw_background(
+fn draw_content(
     context: &ID2D1DeviceContext,
+    dwrite_factory: &IDWriteFactory,
+    text_format: &IDWriteTextFormat,
     swap_chain: &IDXGISwapChain1,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
     corner_radius: f32,
+    percentage: u8, // battery percentage (0-100)
 ) {
-    let surface: IDXGISurface = unsafe {
-        swap_chain
-            .GetBuffer(0)
-            .expect("Failed to get swap chain buffer")
-    };
-
+    // --- Get Render Target ---
+    let surface: windows::Win32::Graphics::Dxgi::IDXGISurface =
+        unsafe { swap_chain.GetBuffer(0).expect("Failed to get buffer") };
     let props = D2D1_RENDER_TARGET_PROPERTIES {
         r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
         pixelFormat: D2D1_PIXEL_FORMAT {
@@ -313,7 +354,6 @@ fn draw_background(
         usage: D2D1_RENDER_TARGET_USAGE_NONE,
         minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
     };
-
     let d2d_device = unsafe { context.GetDevice().expect("Failed to get d2d device") };
     let d2d_factory = unsafe { d2d_device.GetFactory().expect("Failed to get d2d factory") };
 
@@ -328,33 +368,165 @@ fn draw_background(
         g: 0.0,
         b: 0.0,
         a: 0.0,
+    }; // Transparent
+    let background_color = D2D1_COLOR_F {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.7,
+    }; // Opaque Black bg
+    let outline_color = D2D1_COLOR_F {
+        r: 0.8,
+        g: 0.8,
+        b: 0.8,
+        a: 1.0,
+    }; // Light gray outline/text
+    let fill_color = match percentage {
+        0..=20 => D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.2,
+            b: 0.2,
+            a: 1.0,
+        }, // Red
+        21..=50 => D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.8,
+            b: 0.0,
+            a: 1.0,
+        }, // Yellow
+        _ => D2D1_COLOR_F {
+            r: 0.2,
+            g: 1.0,
+            b: 0.2,
+            a: 1.0,
+        }, // Green
     };
-    let fill_color = D2D1_COLOR_F { r, g, b, a };
 
-    let brush = unsafe {
+    // --- Create Brushes ---
+    let bg_brush: ID2D1SolidColorBrush = unsafe {
+        render_target
+            .CreateSolidColorBrush(&background_color, None)
+            .expect("Failed to create bg brush")
+    };
+    let outline_brush: ID2D1SolidColorBrush = unsafe {
+        render_target
+            .CreateSolidColorBrush(&outline_color, None)
+            .expect("Failed to create outline brush")
+    };
+    let fill_brush: ID2D1SolidColorBrush = unsafe {
         render_target
             .CreateSolidColorBrush(&fill_color, None)
-            .expect("Failed to create brush")
+            .expect("Failed to create fill brush")
     };
 
-    let rect = D2D_RECT_F {
+    // --- Define Geometry ---
+    let target_width = WINDOW_WIDTH as f32;
+    let target_height = WINDOW_HEIGHT as f32;
+
+    // Background Rounded Rect
+    let bg_rect = D2D_RECT_F {
         left: 0.0,
         top: 0.0,
-        right: WINDOW_WIDTH as f32,
-        bottom: WINDOW_HEIGHT as f32,
+        right: target_width,
+        bottom: target_height,
     };
-
-    let rounded_rect = D2D1_ROUNDED_RECT {
-        rect,
+    let bg_rounded_rect = D2D1_ROUNDED_RECT {
+        rect: bg_rect,
         radiusX: corner_radius,
         radiusY: corner_radius,
     };
 
+    // Battery Icon Geometry (adjust sizes/positions as needed)
+    let icon_height = target_height * 0.4; // Icon takes 40% of overlay height
+    let icon_width = icon_height * 1.8;
+    let icon_center_x = target_width / 2.0;
+    let icon_top_y = target_height * 0.15; // Position icon 15% from the top
+    let icon_bottom_y = icon_top_y + icon_height;
+    let outline_thickness = 2.0;
+
+    // Battery Body
+    let body_rect = D2D_RECT_F {
+        left: icon_center_x - icon_width / 2.0,
+        top: icon_top_y,
+        right: icon_center_x + icon_width / 2.0,
+        bottom: icon_bottom_y,
+    };
+
+    // Battery Terminal
+    let terminal_height = icon_height * 0.4;
+    let terminal_width = icon_width * 0.1;
+    let terminal_rect = D2D_RECT_F {
+        left: body_rect.right,
+        top: icon_top_y + (icon_height - terminal_height) / 2.0,
+        right: body_rect.right + terminal_width,
+        bottom: icon_top_y + (icon_height + terminal_height) / 2.0,
+    };
+
+    // Battery Fill Area (inside the body, accounting for outline)
+    let fill_margin = outline_thickness + 2.0; // Margin inside the outline
+    let max_fill_width = body_rect.right - body_rect.left - 2.0 * fill_margin;
+    let fill_width = max_fill_width * (percentage as f32 / 100.0);
+    let fill_rect = D2D_RECT_F {
+        left: body_rect.left + fill_margin,
+        top: body_rect.top + fill_margin,
+        right: body_rect.left + fill_margin + fill_width,
+        bottom: body_rect.bottom - fill_margin,
+    };
+
+    // Text Layout Area (below the icon)
+    let text_top_y = icon_bottom_y + 5.0; // Space below icon
+    let text_layout_rect = D2D_RECT_F {
+        left: 0.0, // Allow text to center across the whole width
+        top: text_top_y,
+        right: target_width,
+        bottom: target_height - 5.0, // Space at bottom
+    };
+
+    // --- Draw Commands ---
     unsafe {
         render_target.BeginDraw();
-        render_target.Clear(Some(&clear_color));
-        render_target.FillRoundedRectangle(&rounded_rect, &brush);
-        let _ = render_target.EndDraw(None, None);
+        render_target.Clear(Some(&clear_color)); // Clear transparent
+
+        // 1. Draw Background
+        render_target.FillRoundedRectangle(&bg_rounded_rect, &bg_brush);
+
+        // 2. Draw Battery Icon
+        // Outline
+        render_target.DrawRectangle(&body_rect, &outline_brush, outline_thickness, None);
+        render_target.FillRectangle(&terminal_rect, &outline_brush); // Solid terminal
+        // Fill
+        if fill_width > 0.0 {
+            render_target.FillRectangle(&fill_rect, &fill_brush);
+        }
+
+        // 3. Draw Text
+        let text = format!("{}%", percentage);
+        let text_pcwstr = text.encode_utf16().collect::<Vec<u16>>(); // Convert to UTF-16
+
+        // Create Text Layout
+        let text_layout: IDWriteTextLayout = dwrite_factory
+            .CreateTextLayout(
+                &text_pcwstr,
+                &*text_format,
+                text_layout_rect.right - text_layout_rect.left, // Max width
+                text_layout_rect.bottom - text_layout_rect.top, // Max height
+            )
+            .expect("Failed to create text layout");
+
+        // Draw the layout using the outline brush color
+        render_target.DrawTextLayout(
+            Vector2 {
+                X: text_layout_rect.left,
+                Y: text_layout_rect.top,
+            }, // Origin point
+            &text_layout,
+            &outline_brush, // Use outline brush for text color
+            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+        );
+
+        render_target
+            .EndDraw(None, None)
+            .expect("Failed to end draw");
 
         let _ = swap_chain.Present(1, DXGI_PRESENT::default());
     }
