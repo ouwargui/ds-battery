@@ -1,0 +1,107 @@
+name: Build and Release
+
+# Controls when the workflow will run
+on:
+  push:
+    branches:
+      - main # Runs on pushes (including merges) to the main branch
+
+# Sets permissions of the GITHUB_TOKEN to allow creating releases
+permissions:
+  contents: write
+
+jobs:
+  build_release:
+    name: Build & Release Windows x64
+    runs-on: windows-latest # Use a Windows runner
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        # Fetch all history so subsequent steps like version extraction might work better if needed
+        # Not strictly necessary for just reading Cargo.toml version here.
+        # with:
+        #   fetch-depth: 0
+
+      # 2. Set up Rust toolchain
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc # Ensure target is added
+
+      # 3. Build application in release mode
+      - name: Build application
+        run: cargo build --verbose --release --target x86_64-pc-windows-msvc
+
+      # 4. Get Version and Project Name from Cargo.toml
+      - name: Get Package Info
+        id: package_info
+        shell: pwsh
+        run: |
+          $cargoTomlPath = "./Cargo.toml"
+          # Basic parsing assuming standard TOML format
+          $packageNameLine = Get-Content $cargoTomlPath | Select-String -Pattern '^name\s*=\s*"(.*)"'
+          $packageVersionLine = Get-Content $cargoTomlPath | Select-String -Pattern '^version\s*=\s*"(.*)"'
+
+          if ($packageNameLine -and $packageVersionLine) {
+            $appName = $packageNameLine.Matches[0].Groups[1].Value
+            $appVersion = $packageVersionLine.Matches[0].Groups[1].Value
+            Write-Host "App Name: $appName"
+            Write-Host "App Version: $appVersion"
+            # Set outputs for later steps
+            echo "APP_NAME=$appName" >> $env:GITHUB_OUTPUT
+            echo "APP_VERSION=$appVersion" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "Could not parse name or version from Cargo.toml"
+            exit 1
+          }
+
+      # 5. Prepare artifact structure
+      # Copies the exe, DLL, and icon into a staging directory
+      - name: Prepare artifact structure
+        shell: pwsh
+        run: |
+          $appName = "${{ steps.package_info.outputs.APP_NAME }}"
+          $stagingDir = "release-package"
+          New-Item -ItemType Directory -Force -Path $stagingDir
+          Copy-Item -Path "target/release/$appName.exe" -Destination $stagingDir
+          Copy-Item -Path "lib/hidapi.dll" -Destination $stagingDir
+          Copy-Item -Path "app_icon.ico" -Destination $stagingDir
+          Write-Host "Contents of staging directory:"
+          Get-ChildItem $stagingDir # List contents for verification
+
+      # 6. Create ZIP archive
+      - name: Create ZIP archive
+        id: zip
+        shell: pwsh
+        run: |
+          $appName = "${{ steps.package_info.outputs.APP_NAME }}"
+          $version = "${{ steps.package_info.outputs.APP_VERSION }}"
+          $zipFileName = "${appName}-v${version}-win-x64.zip"
+          Compress-Archive -Path ./release-package/* -DestinationPath $zipFileName -Force
+          Write-Host "Created $zipFileName"
+          # Set output for the release step
+          echo "ZIP_FILE_NAME=$zipFileName" >> $env:GITHUB_OUTPUT
+
+      # 7. Create GitHub Release and Upload Asset
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2 # Use v2 or latest stable
+        env:
+          # This token is provided by Actions, you do not need to create your own token
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Use the version from Cargo.toml for the tag and release name
+          tag_name: v${{ steps.package_info.outputs.APP_VERSION }}
+          name: Release v${{ steps.package_info.outputs.APP_VERSION }}
+          body: |
+            Automated release for version ${{ steps.package_info.outputs.APP_VERSION }}.
+
+            Contains Windows x64 build including:
+            - `${{ steps.package_info.outputs.APP_NAME }}.exe`
+            - `hidapi.dll`
+            - `app_icon.ico`
+          draft: false
+          prerelease: false
+          files: ${{ steps.zip.outputs.ZIP_FILE_NAME }}
