@@ -61,7 +61,7 @@ struct AppState {
     d2d_device_context: ID2D1DeviceContext,
     dwrite_factory: IDWriteFactory,
     text_format: IDWriteTextFormat,
-    battery_receiver: mpsc::Receiver<dualsense::BatteryReport>,
+    dualsense_receiver: mpsc::Receiver<dualsense::ControllerEvent>,
     last_battery_report: Option<dualsense::BatteryReport>,
     visibility_state: VisibilityState,
     fadeout_timer_id: Option<usize>,
@@ -70,7 +70,7 @@ struct AppState {
 }
 
 fn main() -> Result<(), ()> {
-    let battery_receiver = dualsense::setup_controller_polling().unwrap();
+    let dualsense_receiver = dualsense::setup_controller_polling().unwrap();
 
     let hinstance: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap().into() };
     let hwnd = window::create_overlay_window(hinstance).unwrap();
@@ -106,7 +106,7 @@ fn main() -> Result<(), ()> {
 
     let mut app_state = AppState {
         hwnd,
-        battery_receiver,
+        dualsense_receiver,
         last_battery_report: None,
         visibility_state: VisibilityState::Hidden,
         fadeout_timer_id: None,
@@ -155,9 +155,9 @@ fn main() -> Result<(), ()> {
             }
         }
 
-        if app_state.visibility_state != VisibilityState::Hidden {
-            match app_state.battery_receiver.try_recv() {
-                Ok(new_report) => {
+        match app_state.dualsense_receiver.try_recv() {
+            Ok(event) => match event {
+                dualsense::ControllerEvent::BatteryUpdate(new_report) => {
                     let needs_redraw =
                         app_state.last_battery_report.as_ref().map_or(true, |last| {
                             new_report.battery_capacity != last.battery_capacity
@@ -177,12 +177,16 @@ fn main() -> Result<(), ()> {
                         app_state.last_battery_report = Some(new_report);
                     }
                 }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    eprintln!("Battery receiver disconnected");
-                    break Err(());
+                dualsense::ControllerEvent::MuteBussonPressed => {
+                    println!("Mute button pressed aaa");
+                    window::handle_hotkey(&mut app_state);
                 }
-                _ => {}
+            },
+            Err(mpsc::TryRecvError::Disconnected) => {
+                eprintln!("Battery receiver disconnected");
+                break Err(());
             }
+            _ => {}
         }
 
         thread::sleep(Duration::from_millis(50));

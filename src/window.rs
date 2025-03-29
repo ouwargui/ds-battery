@@ -10,9 +10,9 @@ use windows::{
                 self, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HICON, HWND_TOPMOST, IDC_ARROW,
                 KillTimer, LoadCursorW, PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW,
-                SW_SHOWNOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, ShowWindow, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_PAINT,
-                WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetTimer, SetWindowLongPtrW, SetWindowPos,
+                ShowWindow, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
+                WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
             },
         },
     },
@@ -67,7 +67,7 @@ pub fn create_overlay_window(hinstance: HINSTANCE) -> Result<HWND, windows::core
 
     let hwnd: HWND = unsafe {
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
             class_name,
             w!("DS Battery overlay"),
             WS_POPUP,
@@ -96,7 +96,7 @@ pub fn create_overlay_window(hinstance: HINSTANCE) -> Result<HWND, windows::core
     Ok(hwnd)
 }
 
-unsafe fn handle_hotkey(app_state: &mut AppState) {
+pub fn handle_hotkey(app_state: &mut AppState) {
     match app_state.visibility_state {
         VisibilityState::Hidden | VisibilityState::FadingOut => {
             println!("Showing window");
@@ -115,9 +115,7 @@ unsafe fn handle_hotkey(app_state: &mut AppState) {
                 Err(e) => eprintln!("!!! FAILED to commit DComp changes in handle_hotkey: {}", e),
             };
 
-            unsafe {
-                let _ = ShowWindow(app_state.hwnd, SW_SHOWNOACTIVATE);
-            };
+            show_and_set_topmost(&app_state.hwnd);
 
             let percent_to_draw = app_state
                 .last_battery_report
@@ -257,7 +255,7 @@ unsafe fn handle_fadeout_timer(app_state: &mut AppState) {
     }
 }
 
-pub fn _show_and_set_topmost(hwnd: &HWND) {
+pub fn show_and_set_topmost(hwnd: &HWND) {
     unsafe {
         let _ = ShowWindow(*hwnd, SW_SHOW);
 
@@ -268,7 +266,7 @@ pub fn _show_and_set_topmost(hwnd: &HWND) {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
     }
 }
@@ -317,7 +315,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_HOTKEY => {
                 if wparam.0 as i32 == HOTKEY_ID_TOGGLE {
                     println!("WM_HOTKEY received");
-                    unsafe { handle_hotkey(app_state) };
+                    handle_hotkey(app_state);
                     return LRESULT(0);
                 }
             }

@@ -1,5 +1,6 @@
 use hidapi::{BusType, DeviceInfo, HidApi};
 use std::{
+    ffi::CString,
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::Duration,
@@ -23,41 +24,77 @@ impl BatteryReport {
     }
 }
 
-pub fn setup_controller_polling() -> Result<Receiver<BatteryReport>, String> {
-    let (sender, receiver) = mpsc::channel::<BatteryReport>();
+#[derive(Debug)]
+pub enum ControllerEvent {
+    BatteryUpdate(BatteryReport),
+    MuteBussonPressed,
+}
+
+struct ConnectedControllerState {
+    device: hidapi::HidDevice,
+    is_bluetooth: bool,
+    previous_mute_state: bool,
+    last_battery_poll: std::time::Instant,
+    has_polled_for_first_time: bool,
+}
+
+pub fn setup_controller_polling() -> Result<Receiver<ControllerEvent>, String> {
+    let (sender, receiver) = mpsc::channel::<ControllerEvent>();
     spawn_polling_thread(sender)?;
     Ok(receiver)
 }
 
-pub fn spawn_polling_thread(battery_sender: Sender<BatteryReport>) -> Result<(), String> {
+pub fn spawn_polling_thread(event_sender: Sender<ControllerEvent>) -> Result<(), String> {
     let builder = thread::Builder::new()
         .name("dualsense_poll".to_string())
         .spawn(move || {
-            let mut api = HidApi::new().expect("Failed to initialize HID API");
+            let api = HidApi::new().expect("Failed to initialize HID API");
+
+            let mut current_device_state: Option<ConnectedControllerState> = None;
 
             loop {
-                api.refresh_devices().expect("Failed to refresh devices");
-                let devices = api.device_list();
-
-                for device in devices {
-                    if device.vendor_id() == 0x054C
-                        && (device.product_id() == 0x0CE6 || device.product_id() == 0x0DF2)
-                    {
-                        if let Ok(controller) = api.open(device.vendor_id(), device.product_id()) {
-                            let mut buf = [0u8; 64];
-
-                            if let Ok(len) = controller.read_timeout(&mut buf, 500) {
-                                if len > 30 {
-                                    if battery_sender.send(parse_battery(&buf, &device)).is_err() {
-                                        eprintln!("Failed to send battery report");
-                                        break;
-                                    };
-                                }
+                if current_device_state.is_none() {
+                    if let Some((path, info)) = find_dualsense_device(&api) {
+                        match api.open_path(&path) {
+                            Ok(device) => {
+                                let is_bluetooth = matches!(info.bus_type(), BusType::Bluetooth);
+                                current_device_state = Some(ConnectedControllerState {
+                                    device,
+                                    is_bluetooth,
+                                    previous_mute_state: false,
+                                    last_battery_poll: std::time::Instant::now(),
+                                    has_polled_for_first_time: false,
+                                });
                             }
+                            Err(e) => {
+                                eprintln!("Failed to open device: {}", e);
+                                thread::sleep(Duration::from_secs(2));
+                            }
+                        }
+                    } else {
+                        println!("No device found, waiting 5 seconds before retrying...");
+                        thread::sleep(Duration::from_secs(5));
+                        continue;
+                    }
+                }
+
+                if let Some(mut state) = current_device_state.take() {
+                    match poll_connected_device(&mut state, &event_sender) {
+                        Ok(true) => {
+                            current_device_state = Some(state);
+                        }
+                        Ok(false) => {
+                            println!("Device disconnected");
+                            current_device_state = None;
+                        }
+                        Err(PollError::ChannelClosed) => {
+                            println!("Event channel closed, exiting polling thread");
+                            break;
                         }
                     }
                 }
-                thread::sleep(Duration::from_secs(10));
+
+                thread::sleep(Duration::from_millis(20));
             }
         })
         .map_err(|e| e.to_string());
@@ -66,17 +103,68 @@ pub fn spawn_polling_thread(battery_sender: Sender<BatteryReport>) -> Result<(),
         return Err("Failed to spawn polling thread".to_string());
     }
 
+    println!("Controller polling thread finished.");
+
     Ok(())
 }
 
-pub(crate) fn parse_battery(report: &[u8], device: &DeviceInfo) -> BatteryReport {
+#[derive(Debug)]
+enum PollError {
+    ChannelClosed,
+}
+
+fn poll_connected_device(
+    state: &mut ConnectedControllerState,
+    event_sender: &Sender<ControllerEvent>,
+) -> Result<bool, PollError> {
+    let mut buf = [0u8; 64];
+    match state.device.read_timeout(&mut buf, 20) {
+        Ok(len) if len > 0 => {
+            if !state.has_polled_for_first_time
+                || state.last_battery_poll.elapsed() >= Duration::from_secs(10)
+            {
+                let battery_report = parse_battery(&buf, state.is_bluetooth);
+
+                if event_sender
+                    .send(ControllerEvent::BatteryUpdate(battery_report))
+                    .is_err()
+                {
+                    eprintln!("Failed to send battery update event");
+                    return Err(PollError::ChannelClosed);
+                }
+
+                state.last_battery_poll = std::time::Instant::now();
+                state.has_polled_for_first_time = true;
+            }
+
+            let current_mute_state = mute_button_pressed(&buf, state.is_bluetooth);
+            if current_mute_state && !state.previous_mute_state {
+                println!("Mute button pressed");
+                if event_sender
+                    .send(ControllerEvent::MuteBussonPressed)
+                    .is_err()
+                {
+                    eprintln!("Failed to send mute button event");
+                    return Err(PollError::ChannelClosed);
+                }
+            }
+            state.previous_mute_state = current_mute_state;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Failed to read from controller: {}", e);
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+pub(crate) fn parse_battery(report: &[u8], is_bluetooth: bool) -> BatteryReport {
     if report.len() < 55 {
         return BatteryReport::new(0, false, false);
         // Avoid out-of-bounds access
     }
-
-    // USB reports start at index 1, Bluetooth at index 2
-    let is_bluetooth = matches!(device.bus_type(), BusType::Bluetooth);
     let status_byte = if is_bluetooth { report[54] } else { report[53] };
 
     let battery_data = status_byte & 0x0F; // Extracts the battery level (0-10)
@@ -94,4 +182,22 @@ pub(crate) fn parse_battery(report: &[u8], device: &DeviceInfo) -> BatteryReport
     };
 
     BatteryReport::new(battery_capacity, charging_status, is_healthy)
+}
+
+pub(crate) fn mute_button_pressed(report: &[u8], is_bluetooth: bool) -> bool {
+    let mic_byte = if is_bluetooth { report[11] } else { report[10] };
+    let mic_button_pressed = (mic_byte & 0x04) != 0;
+
+    mic_button_pressed
+}
+
+fn find_dualsense_device(api: &HidApi) -> Option<(CString, DeviceInfo)> {
+    for device_info in api.device_list() {
+        if device_info.vendor_id() == 0x054C
+            && (device_info.product_id() == 0x0CE6 || device_info.product_id() == 0x0DF2)
+        {
+            return Some((device_info.path().to_owned(), device_info.clone()));
+        }
+    }
+    None
 }
