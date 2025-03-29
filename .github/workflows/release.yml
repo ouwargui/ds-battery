@@ -66,7 +66,7 @@ jobs:
           $appName = "${{ steps.package_info.outputs.APP_NAME }}"
           $stagingDir = "release-package"
           New-Item -ItemType Directory -Force -Path $stagingDir
-          Copy-Item -Path "target/release/$appName.exe" -Destination $stagingDir
+          Copy-Item -Path "target/x86_64-pc-windows-msvc/release/$appName.exe" -Destination $stagingDir
           Copy-Item -Path "lib/hidapi.dll" -Destination $stagingDir
           Copy-Item -Path "app_icon.ico" -Destination $stagingDir
           Write-Host "Contents of staging directory:"
