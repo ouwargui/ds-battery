@@ -10,17 +10,16 @@ use windows::Win32::Graphics::{
     Dxgi::{Common::DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_PRESENT},
 };
 
-use crate::{CORNER_RADIUS, WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::{
+    CORNER_RADIUS, WINDOW_HEIGHT, WINDOW_WIDTH,
+    dualsense::{BatteryReport, BatteryStatus},
+};
 
 pub fn draw_content(app_state: &crate::AppState) {
-    let (percentage, _) = match &app_state.triggering_controller_path {
-        Some(path) => app_state
-            .battery_status_map
-            .get(path)
-            .map_or((0, false), |report| {
-                (report.battery_capacity, report.charging_status)
-            }),
-        None => (0, false),
+    let default = BatteryReport::new(0, BatteryStatus::Unknown);
+    let battery_report = match &app_state.triggering_controller_path {
+        Some(path) => app_state.battery_status_map.get(path).unwrap_or(&default),
+        None => &default,
     };
 
     // --- Get Render Target ---
@@ -73,7 +72,7 @@ pub fn draw_content(app_state: &crate::AppState) {
         b: 0.8,
         a: 1.0,
     }; // Light gray outline/text
-    let fill_color = match percentage {
+    let fill_color = match battery_report.battery_capacity {
         0..=20 => rgba_to_d2d1_color_f(242, 27, 63, 255),
         21..=50 => rgba_to_d2d1_color_f(255, 198, 10, 255),
         _ => rgba_to_d2d1_color_f(43, 192, 22, 255),
@@ -155,7 +154,7 @@ pub fn draw_content(app_state: &crate::AppState) {
         bottom: body_rect.bottom - inset,
     };
     let max_fill_width = fill_area_rect.right - fill_area_rect.left;
-    let fill_width = max_fill_width * (percentage as f32 / 100.0);
+    let fill_width = max_fill_width * (battery_report.battery_capacity as f32 / 100.0);
     // The actual rectangle to fill
     let fill_rect = D2D_RECT_F {
         left: fill_area_rect.left,
@@ -197,7 +196,11 @@ pub fn draw_content(app_state: &crate::AppState) {
         render_target.FillRectangle(&terminal_rect, &outline_brush); // Solid terminal
 
         // 3. Draw Text
-        let text = format!("{}%", percentage);
+        let text = if battery_report.battery_status.eq(&BatteryStatus::Charging) {
+            format!("{}% - Charging", battery_report.battery_capacity)
+        } else {
+            format!("{}%", battery_report.battery_capacity)
+        };
         let text_pcwstr = text.encode_utf16().collect::<Vec<u16>>(); // Convert to UTF-16
 
         // Create Text Layout

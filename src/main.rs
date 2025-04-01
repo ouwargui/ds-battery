@@ -2,9 +2,12 @@
 
 mod dualsense;
 mod graphics;
+mod polling;
 mod renderer;
 mod tray;
 mod window;
+mod window_creator;
+mod window_message_handler;
 
 use std::{collections::HashMap, sync::mpsc, thread, time::Duration};
 
@@ -73,10 +76,10 @@ struct AppState {
 }
 
 fn main() -> Result<(), ()> {
-    let dualsense_receiver = dualsense::setup_controller_polling().unwrap();
+    let dualsense_receiver = polling::setup_controller_polling().unwrap();
 
     let hinstance: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap().into() };
-    let hwnd = window::create_overlay_window(hinstance).unwrap();
+    let (hwnd, window_creator) = window::create_overlay_window(hinstance).unwrap();
 
     let icon_path = w!("app_icon.ico");
     let h_icon = unsafe {
@@ -130,7 +133,7 @@ fn main() -> Result<(), ()> {
         h_icon,
     };
 
-    window::associate_appstate_with_hwnd(app_state.hwnd, &mut app_state);
+    window_creator.associate_appstate_with_hwnd(app_state.hwnd, &mut app_state);
     if let Some(icon) = app_state.h_icon {
         tray::add_tray_icon(app_state.hwnd, icon, WM_APP_TRAYMSG).unwrap();
     } else {
@@ -172,10 +175,10 @@ fn main() -> Result<(), ()> {
                         renderer::draw_content(&app_state);
                     }
                 }
-                dualsense::ControllerEvent::MuteBussonPressed(path) => {
+                dualsense::ControllerEvent::MuteButtonPressed(path) => {
                     println!("Main: Mute button pressed on {}", path);
                     app_state.triggering_controller_path = Some(path.clone());
-                    window::handle_hotkey(&mut app_state);
+                    window_message_handler::toggle_window_visibility(&mut app_state);
                 }
                 dualsense::ControllerEvent::DeviceConnected(path) => {
                     println!("Main: Device connected: {}", path);
