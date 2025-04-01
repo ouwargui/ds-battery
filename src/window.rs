@@ -117,23 +117,7 @@ pub fn handle_hotkey(app_state: &mut AppState) {
 
             show_and_set_topmost(&app_state.hwnd);
 
-            let percent_to_draw = app_state
-                .last_battery_report
-                .as_ref()
-                .map_or(0, |r| r.battery_capacity);
-            let charging_to_draw = app_state
-                .last_battery_report
-                .as_ref()
-                .map_or(false, |r| r.charging_status);
-            renderer::draw_content(
-                &app_state.d2d_device_context,
-                &app_state.dwrite_factory,
-                &app_state.text_format,
-                &app_state.swap_chain,
-                crate::CORNER_RADIUS,
-                percent_to_draw,
-                charging_to_draw,
-            );
+            renderer::draw_content(&app_state);
 
             let new_timer_id = unsafe {
                 SetTimer(

@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dualsense;
 mod graphics;
@@ -6,7 +6,7 @@ mod renderer;
 mod tray;
 mod window;
 
-use std::{sync::mpsc, thread, time::Duration};
+use std::{collections::HashMap, sync::mpsc, thread, time::Duration};
 
 use windows::{
     Win32::{
@@ -64,7 +64,8 @@ struct AppState {
     dwrite_factory: IDWriteFactory,
     text_format: IDWriteTextFormat,
     dualsense_receiver: mpsc::Receiver<dualsense::ControllerEvent>,
-    last_battery_report: Option<dualsense::BatteryReport>,
+    battery_status_map: HashMap<String, dualsense::BatteryReport>,
+    triggering_controller_path: Option<String>,
     visibility_state: VisibilityState,
     fadeout_timer_id: Option<usize>,
     fade_out_animation: Option<IDCompositionAnimation>,
@@ -109,8 +110,9 @@ fn main() -> Result<(), ()> {
     let mut app_state = AppState {
         hwnd,
         dualsense_receiver,
-        last_battery_report: None,
         visibility_state: VisibilityState::Hidden,
+        battery_status_map: HashMap::new(),
+        triggering_controller_path: None,
         fadeout_timer_id: None,
         d3d_device: graphics_resources.d3d_device,
         dxgi_device: graphics_resources.dxgi_device,
@@ -159,29 +161,32 @@ fn main() -> Result<(), ()> {
 
         match app_state.dualsense_receiver.try_recv() {
             Ok(event) => match event {
-                dualsense::ControllerEvent::BatteryUpdate(new_report) => {
-                    let needs_redraw =
-                        app_state.last_battery_report.as_ref().map_or(true, |last| {
-                            new_report.battery_capacity != last.battery_capacity
-                        });
+                dualsense::ControllerEvent::BatteryUpdate(path, report) => {
+                    app_state
+                        .battery_status_map
+                        .insert(path.clone(), report.clone());
 
-                    if needs_redraw {
-                        renderer::draw_content(
-                            &app_state.d2d_device_context,
-                            &app_state.dwrite_factory,
-                            &app_state.text_format,
-                            &app_state.swap_chain,
-                            CORNER_RADIUS,
-                            new_report.battery_capacity,
-                            new_report.charging_status,
-                        );
-
-                        app_state.last_battery_report = Some(new_report);
+                    if Some(&path) == app_state.triggering_controller_path.as_ref()
+                        && app_state.visibility_state != VisibilityState::Hidden
+                    {
+                        renderer::draw_content(&app_state);
                     }
                 }
-                dualsense::ControllerEvent::MuteBussonPressed => {
-                    println!("Mute button pressed aaa");
+                dualsense::ControllerEvent::MuteBussonPressed(path) => {
+                    println!("Main: Mute button pressed on {}", path);
+                    app_state.triggering_controller_path = Some(path.clone());
                     window::handle_hotkey(&mut app_state);
+                }
+                dualsense::ControllerEvent::DeviceConnected(path) => {
+                    println!("Main: Device connected: {}", path);
+                }
+                dualsense::ControllerEvent::DeviceDisconnected(path) => {
+                    println!("Main: Device disconnected: {}", path);
+                    app_state.battery_status_map.remove(&path);
+                    if Some(&path) == app_state.triggering_controller_path.as_ref() {
+                        app_state.triggering_controller_path = None;
+                        app_state.visibility_state = VisibilityState::Hidden;
+                    }
                 }
             },
             Err(mpsc::TryRecvError::Disconnected) => {

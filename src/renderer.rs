@@ -4,26 +4,32 @@ use windows::Win32::Graphics::{
     Direct2D::{
         Common::{D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT},
         D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, ID2D1DeviceContext, ID2D1SolidColorBrush,
+        D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, ID2D1SolidColorBrush,
     },
-    DirectWrite::{IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout},
-    Dxgi::{Common::DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_PRESENT, IDXGISwapChain1},
+    DirectWrite::IDWriteTextLayout,
+    Dxgi::{Common::DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_PRESENT},
 };
 
-use crate::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::{CORNER_RADIUS, WINDOW_HEIGHT, WINDOW_WIDTH};
 
-pub fn draw_content(
-    context: &ID2D1DeviceContext,
-    dwrite_factory: &IDWriteFactory,
-    text_format: &IDWriteTextFormat,
-    swap_chain: &IDXGISwapChain1,
-    corner_radius: f32,
-    battery_percentage: u8, // battery percentage (0-100)
-    _battery_charging: bool,
-) {
+pub fn draw_content(app_state: &crate::AppState) {
+    let (percentage, _) = match &app_state.triggering_controller_path {
+        Some(path) => app_state
+            .battery_status_map
+            .get(path)
+            .map_or((0, false), |report| {
+                (report.battery_capacity, report.charging_status)
+            }),
+        None => (0, false),
+    };
+
     // --- Get Render Target ---
-    let surface: windows::Win32::Graphics::Dxgi::IDXGISurface =
-        unsafe { swap_chain.GetBuffer(0).expect("Failed to get buffer") };
+    let surface: windows::Win32::Graphics::Dxgi::IDXGISurface = unsafe {
+        app_state
+            .swap_chain
+            .GetBuffer(0)
+            .expect("Failed to get buffer")
+    };
     let props = D2D1_RENDER_TARGET_PROPERTIES {
         r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
         pixelFormat: D2D1_PIXEL_FORMAT {
@@ -35,7 +41,12 @@ pub fn draw_content(
         usage: D2D1_RENDER_TARGET_USAGE_NONE,
         minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
     };
-    let d2d_device = unsafe { context.GetDevice().expect("Failed to get d2d device") };
+    let d2d_device = unsafe {
+        app_state
+            .d2d_device_context
+            .GetDevice()
+            .expect("Failed to get d2d device")
+    };
     let d2d_factory = unsafe { d2d_device.GetFactory().expect("Failed to get d2d factory") };
 
     let render_target = unsafe {
@@ -62,7 +73,7 @@ pub fn draw_content(
         b: 0.8,
         a: 1.0,
     }; // Light gray outline/text
-    let fill_color = match battery_percentage {
+    let fill_color = match percentage {
         0..=20 => rgba_to_d2d1_color_f(242, 27, 63, 255),
         21..=50 => rgba_to_d2d1_color_f(255, 198, 10, 255),
         _ => rgba_to_d2d1_color_f(43, 192, 22, 255),
@@ -98,8 +109,8 @@ pub fn draw_content(
     };
     let bg_rounded_rect = D2D1_ROUNDED_RECT {
         rect: bg_rect,
-        radiusX: corner_radius,
-        radiusY: corner_radius,
+        radiusX: CORNER_RADIUS,
+        radiusY: CORNER_RADIUS,
     };
 
     let icon_height = target_height * 0.4; // Icon takes 40% of overlay height
@@ -144,7 +155,7 @@ pub fn draw_content(
         bottom: body_rect.bottom - inset,
     };
     let max_fill_width = fill_area_rect.right - fill_area_rect.left;
-    let fill_width = max_fill_width * (battery_percentage as f32 / 100.0);
+    let fill_width = max_fill_width * (percentage as f32 / 100.0);
     // The actual rectangle to fill
     let fill_rect = D2D_RECT_F {
         left: fill_area_rect.left,
@@ -186,14 +197,15 @@ pub fn draw_content(
         render_target.FillRectangle(&terminal_rect, &outline_brush); // Solid terminal
 
         // 3. Draw Text
-        let text = format!("{}%", battery_percentage);
+        let text = format!("{}%", percentage);
         let text_pcwstr = text.encode_utf16().collect::<Vec<u16>>(); // Convert to UTF-16
 
         // Create Text Layout
-        let text_layout: IDWriteTextLayout = dwrite_factory
+        let text_layout: IDWriteTextLayout = app_state
+            .dwrite_factory
             .CreateTextLayout(
                 &text_pcwstr,
-                &*text_format,
+                &app_state.text_format,
                 text_layout_rect.right - text_layout_rect.left, // Max width
                 text_layout_rect.bottom - text_layout_rect.top, // Max height
             )
@@ -214,7 +226,7 @@ pub fn draw_content(
             .EndDraw(None, None)
             .expect("Failed to end draw");
 
-        let _ = swap_chain.Present(1, DXGI_PRESENT::default());
+        let _ = app_state.swap_chain.Present(1, DXGI_PRESENT::default());
     }
 }
 
