@@ -94,7 +94,7 @@ jobs:
         with:
           # Use the version from Cargo.toml for the tag and release name
           tag_name: v${{ steps.package_info.outputs.APP_VERSION }}
-          name: Release v${{ steps.package_info.outputs.APP_VERSION }}
+          name: v${{ steps.package_info.outputs.APP_VERSION }}
           body: |
             Automated release for version ${{ steps.package_info.outputs.APP_VERSION }}.
 
