@@ -42,7 +42,10 @@ const SHOW_DURATION_MS: u32 = 3000;
 
 pub const WM_APP_TRAYMSG: u32 = WM_USER + 1;
 pub const IDM_CONFIGURE: u16 = 1001;
-pub const IDM_EXIT: u16 = 1002;
+pub const IDM_RUN_ON_STARTUP: u16 = 1002;
+pub const IDM_EXIT: u16 = 1003;
+
+pub const APP_REGISTRY_KEY_NAME: &str = "DSBatteryOverlay";
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum VisibilityState {

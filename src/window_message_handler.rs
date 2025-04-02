@@ -1,6 +1,6 @@
 use crate::{
-    AppState, HOTKEY_ID_TOGGLE, IDM_CONFIGURE, IDM_EXIT, SHOW_DURATION_MS, TIMER_ID_FADEOUT,
-    VisibilityState, WM_APP_TRAYMSG, graphics, renderer, tray,
+    AppState, HOTKEY_ID_TOGGLE, IDM_CONFIGURE, IDM_EXIT, IDM_RUN_ON_STARTUP, SHOW_DURATION_MS,
+    TIMER_ID_FADEOUT, VisibilityState, WM_APP_TRAYMSG, graphics, renderer, tray,
 };
 use windows::Win32::{
     Foundation::{GetLastError, HWND, LPARAM, LRESULT, WPARAM},
@@ -52,6 +52,17 @@ fn handle_command_message(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
     match menu_id {
         IDM_CONFIGURE => {
             println!("Configure menu item clicked");
+            Some(LRESULT(0))
+        }
+        IDM_RUN_ON_STARTUP => {
+            println!("Run on Startup menu item clicked");
+            match tray::is_run_on_startup_enabled() {
+                Ok(current_enabled) => match tray::set_run_on_startup(!current_enabled) {
+                    Ok(_) => println!("Run on startup setting toggled"),
+                    Err(e) => eprintln!("Failed to toggle run on startup: {}", e),
+                },
+                Err(e) => eprintln!("Failed to check run on startup: {}", e),
+            }
             Some(LRESULT(0))
         }
         IDM_EXIT => {
